@@ -1,6 +1,8 @@
 import * as grpc from '@grpc/grpc-js';
 import * as protoLoader from '@grpc/proto-loader';
 import path from 'path';
+import express from 'express';
+import cors from 'cors';
 
 // Constantes de Limiar
 const TRAFFIC_THRESHOLD = 70;
@@ -8,6 +10,7 @@ const TRAFFIC_THRESHOLD = 70;
 // Estados de eleição
 let currentCoordinator: number | null = null;
 let isElectionOngoing = false;
+
 
 // Carregar o Protobuf
 const PROTO_PATH = path.resolve(__dirname, '..', 'proto', 'traffic.proto');
@@ -147,6 +150,27 @@ function getIDFromPort(port: string): number {
     return 0;
 }
 
+// Bridge para comunicação
+function startBridgeAPI() {
+    const app = express();
+    app.use(cors());
+    app.use(express.json());
+
+    app.post('/report', (req, res) => {
+        const { vehicle_count } = req.body;
+        
+        // Propaga para a rede gRPC
+        console.log(`[Bridge] Recebido do Web: ${vehicle_count} veículos. Propagando via gRPC...`);
+        peerPorts.forEach(port => sendDataToPeer(port, vehicle_count));
+        
+        res.send({ status: `Sincronizado. Lamport: ${lamportClock}` });
+    });
+
+    app.listen(3000, () => {
+        console.log(`API Bridge disponível em http://localhost:3000`);
+    });
+}
+
 // Inicialização do Servidor
 function main() {
     const server = new grpc.Server();
@@ -156,6 +180,7 @@ function main() {
         console.log(`Nó ${myId} rodando na porta ${port}`);
         server.start();
     });
+    startBridgeAPI();
 }
 
 main();
