@@ -1,0 +1,31 @@
+syntax = "proto3";
+
+package traffic;
+
+service TrafficService {
+  // Envio de dados de sensores ou entre nós
+  rpc ReportTraffic (TrafficUpdate) returns (Ack);
+  
+  // Para Eleição de Líder (Algoritmo do Valentão)
+  rpc Election (ElectionMessage) returns (Ack);
+  rpc SetCoordinator (CoordinatorMessage) returns (Ack);
+}
+
+message TrafficUpdate {
+  string node_id = 1;
+  string road_id = 2;
+  int32 vehicle_count = 3;
+  int32 lamport_clock = 4; // Requisito: Relógio Lógico
+}
+
+message ElectionMessage {
+  int32 caller_id = 1; 
+}
+
+message CoordinatorMessage {
+  int32 leader_id = 1;
+}
+
+message Ack {
+  bool success = 1;
+}
