@@ -160,7 +160,13 @@ function startBridgeAPI() {
         const { vehicle_count } = req.body;
         
         // Propaga para a rede gRPC
-        console.log(`[Bridge] Recebido do Web: ${vehicle_count} veículos. Propagando via gRPC...`);
+        console.log(`\n╔══════════════════════════════════════════════╗`);
+        console.log(`║  📡 TRÁFEGO RECEBIDO VIA DASHBOARD           ║`);
+        console.log(`║  Volume: ${String(vehicle_count).padEnd(4)} veículos/min              ║`);
+        console.log(`║  Origem: Dashboard Web (http://localhost:3000)║`);
+        console.log(`║  Destino: Nós ${peerPorts.join(', ')}              ║`);
+        console.log(`║  Relógio de Lamport: ${lamportClock}${' '.repeat(Math.max(0, 24 - String(lamportClock).length))}║`);
+        console.log(`╚══════════════════════════════════════════════╝`);
         peerPorts.forEach(port => sendDataToPeer(port, vehicle_count));
         
         res.send({ status: `Sincronizado. Lamport: ${lamportClock}` });
