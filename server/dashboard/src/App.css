@@ -376,6 +376,47 @@
   text-align: center;
 }
 
+/* ===== SELETORES CUSTOMIZADOS (VIA) ===== */
+.select-group {
+  position: relative;
+  z-index: 1;
+  margin-bottom: 4px; /* margem para não colar no semáforo */
+}
+
+.select-field {
+  width: 100%;
+  padding: 14px 16px;
+  background: rgba(0, 0, 0, 0.4); /* Levemente mais escuro para contraste */
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md);
+  color: var(--text-primary);
+  font-family: var(--font-sans);
+  font-size: 15px;
+  font-weight: 600;
+  outline: none;
+  transition: all var(--transition-base);
+  cursor: pointer;
+  appearance: none; /* Remove a seta padrão feia do navegador */
+  -webkit-appearance: none;
+  -moz-appearance: none;
+  background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='24' height='24' viewBox='0 0 24 24' fill='none' stroke='%236366f1' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'><polyline points='6 9 12 15 18 9'></polyline></svg>");
+  background-repeat: no-repeat;
+  background-position: right 16px center;
+  background-size: 16px;
+}
+
+.select-field:focus {
+  border-color: var(--accent-indigo);
+  box-shadow: 0 0 0 3px rgba(99, 102, 241, 0.15), 0 0 20px rgba(99, 102, 241, 0.1);
+}
+
+.select-field option {
+  background: #0c0c14;
+  color: var(--text-primary);
+  font-family: var(--font-sans);
+  padding: 10px;
+}
+
 /* ===== SEND BUTTON ===== */
 .btn-send {
   width: 100%;

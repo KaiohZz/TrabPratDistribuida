@@ -1,35 +1,63 @@
-// dashboard/src/App.tsx
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 import './App.css'
 
 function App() {
   const [trafficCount, setTrafficCount] = useState(0)
-  const [status, setStatus] = useState('Verde') // Verde, Amarelo, Vermelho
+  const [selectedVia, setSelectedVia] = useState('Via A')
+  const [intersection, setIntersection] = useState<any>({
+    'Via A': { status: 'Verde', vehicle_count: 0, time_left: 0 },
+    'Via B': { status: 'Vermelho', vehicle_count: 0, time_left: 0 },
+    'Via C': { status: 'Vermelho', vehicle_count: 0, time_left: 0 },
+    'Via D': { status: 'Vermelho', vehicle_count: 0, time_left: 0 },
+  })
   const [log, setLog] = useState<string[]>([])
   const [ripple, setRipple] = useState<{ x: number; y: number } | null>(null)
 
+  // Endereço do Nó 1 que centraliza a API HTTP na porta 50051
+  const SERVER_IP = '192.168.0.9' 
+  const SERVER_PORT = '50051'
+
+  // Polling para atualizar o semáforo e os tempos em tempo real
+  const fetchStatus = async () => {
+    try {
+      const res = await fetch(`http://${SERVER_IP}:${SERVER_PORT}/intersection-status`)
+      const data = await res.json()
+      setIntersection(data.vias)
+    } catch (err) {
+      // Silencioso para manter a fluidez visual
+    }
+  }
+
+  useEffect(() => {
+    const interval = setInterval(fetchStatus, 1000) // Polling de 1s para o cronômetro atualizar fluido
+    return () => clearInterval(interval)
+  }, [])
+
   const sendTraffic = async (e: React.MouseEvent<HTMLButtonElement>) => {
-    // Ripple effect
     const rect = e.currentTarget.getBoundingClientRect()
     setRipple({ x: e.clientX - rect.left, y: e.clientY - rect.top })
     setTimeout(() => setRipple(null), 600)
 
     try {
-      const res = await fetch('http://localhost:3000/report', {
+      const res = await fetch(`http://${SERVER_IP}:${SERVER_PORT}/report`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ vehicle_count: trafficCount, node_id: 'Mobile-1' })
+        body: JSON.stringify({ vehicle_count: trafficCount, road_id: selectedVia })
       })
       const data = await res.json()
-      setLog(prev => [`[${new Date().toLocaleTimeString()}] ${data.status}`, ...prev])
+      setIntersection(data.vias)
+      setLog(prev => [`[${new Date().toLocaleTimeString()}] Sincronizado ${selectedVia}`, ...prev])
     } catch (err) {
-      setLog(prev => ['Erro ao conectar no servidor', ...prev])
+      setLog(prev => ['Erro ao conectar na rede', ...prev])
     }
   }
 
+  const currentStatus = intersection[selectedVia]?.status || 'Vermelho'
+  const currentTimeLeft = intersection[selectedVia]?.time_left ?? 0
+
   return (
-    <div className="app">
-      {/* Animated Background */}
+    <div className="app min-h-screen text-white flex flex-col justify-between p-4 md:p-8 relative overflow-x-hidden">
+      
       <div className="bg-effects">
         <div className="bg-orb bg-orb--1" />
         <div className="bg-orb bg-orb--2" />
@@ -37,241 +65,137 @@ function App() {
         <div className="bg-grid" />
       </div>
 
-      <div className="content">
-        {/* Header */}
-        <header className="header">
-          <div className="header__badge">
+      <div className="content max-w-4xl w-full mx-auto flex flex-col justify-between flex-grow z-10 gap-6">
+        
+        <header className="header text-center flex flex-col items-center">
+          <div className="header__badge inline-flex items-center gap-2">
             <span className="header__badge-dot" />
-            Sistema Distribuído
+            Nó Atuador de Borda
           </div>
-          <h1 className="header__title">TP01 - CD</h1>
-          <p className="header__subtitle">
-            Sistema de controle de tráfego distribuído em tempo real com comunicação
-            gRPC, Relógio de Lamport e Eleição de Líder
+          <h1 className="header__title text-3xl md:text-5xl font-black mt-2">TP01 - CD</h1>
+          <p className="header__subtitle text-sm md:text-base max-w-xl text-slate-400 mt-2">
+            Gerenciamento Dinâmico de Cruzamento de 4 Vias com Sincronização e Tolerância a Falhas
           </p>
         </header>
 
-        {/* Main Grid */}
-        <div className="main-grid">
-          {/* Traffic Control Card */}
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-6 items-start w-full">
+          
           <div className="card">
             <div className="card__header">
               <div className="card__icon card__icon--traffic">🚦</div>
               <div>
-                <div className="card__title">Controle de Semáforo</div>
-                <div className="card__description">Envie dados de tráfego para a rede gRPC</div>
+                <div className="card__title">Controle do Cruzamento</div>
+                <div className="card__description">Selecione a via e envie a métrica do sensor</div>
               </div>
             </div>
 
-            <div className="semaphore-section">
-              <div className="semaphore-wrapper">
+            <div className="semaphore-section flex flex-col gap-5 mt-4">
+              
+              <div className="select-group">
+                <label className="input-group__label">Ponto de Controle Atual</label>
+                <select 
+                  value={selectedVia} 
+                  onChange={(e) => setSelectedVia(e.target.value)}
+                  className="select-field"
+                >
+                  <option value="Via A">Via A (Norte)</option>
+                  <option value="Via B">Via B (Sul)</option>
+                  <option value="Via C">Via C (Leste)</option>
+                  <option value="Via D">Via D (Oeste)</option>
+                </select>
+              </div>
+
+              {/* Semáforo Visual Ajustado com Contador de Tempo Coordenado */}
+              <div className="semaphore-wrapper bg-slate-950/40 p-4 rounded-2xl border border-slate-800/60 flex items-center justify-around gap-4">
                 <div className="semaphore">
-                  <div className={`semaphore__light semaphore__light--red ${status === 'Vermelho' ? 'active' : ''}`} />
-                  <div className={`semaphore__light semaphore__light--yellow ${status === 'Amarelo' ? 'active' : ''}`} />
-                  <div className={`semaphore__light semaphore__light--green ${status === 'Verde' ? 'active' : ''}`} />
+                  <div className={`semaphore__light semaphore__light--red ${currentStatus === 'Vermelho' ? 'active' : ''}`} />
+                  <div className={`semaphore__light semaphore__light--yellow ${currentStatus === 'Amarelo' ? 'active' : ''}`} />
+                  <div className={`semaphore__light semaphore__light--green ${currentStatus === 'Verde' ? 'active' : ''}`} />
                 </div>
 
-                <div className="status-label">
-                  <div className="status-label__text">Status atual</div>
-                  <div className={`status-label__value status-label__value--${status === 'Verde' ? 'green' : status === 'Amarelo' ? 'yellow' : 'red'}`}>
-                    {status === 'Verde' ? '● Fluxo Normal' : status === 'Amarelo' ? '● Atenção' : '● Congestionado'}
+                <div className="status-label flex flex-col gap-1">
+                  <div className="status-label__text text-xs text-slate-500">Sinal na {selectedVia}</div>
+                  <div className={`status-label__value font-bold text-sm status-label__value--${currentStatus === 'Verde' ? 'green' : currentStatus === 'Amarelo' ? 'yellow' : 'red'}`}>
+                    {currentStatus === 'Verde' ? '● Aberto' : currentStatus === 'Amarelo' ? '● Atenção' : '● Fechado'}
+                  </div>
+                  {/* Cronômetro Coordenado */}
+                  <div className="text-[11px] font-mono text-slate-400 bg-slate-900/60 px-2 py-0.5 rounded border border-slate-800/80 w-fit">
+                    Tempo restante: <span className="text-cyan-400 font-bold">{currentTimeLeft}s</span>
                   </div>
                 </div>
               </div>
 
               <div className="input-group">
-                <label className="input-group__label">Veículos detectados (Sensor)</label>
+                <label className="input-group__label">Veículos Detectados por Minuto</label>
                 <input
                   type="number"
                   value={trafficCount}
-                  onChange={(e) => setTrafficCount(Number(e.target.value))}
-                  className="input-group__field"
+                  onChange={(e) => setTrafficCount(Math.max(0, Number(e.target.value)))}
+                  className="input-group__field text-center font-bold text-2xl bg-slate-950/60"
                   placeholder="0"
                 />
-                <div className="input-group__hint">
-                  Valores acima de 70 disparam alerta de congestionamento na rede
+                <div className="input-group__hint text-xs text-slate-500 mt-1">
+                  Valores acima de 70 forçam a abertura desta via e reiniciam a temporização do cluster
                 </div>
               </div>
 
-              <button onClick={sendTraffic} className="btn-send">
+              <button onClick={sendTraffic} className="btn-send w-full relative overflow-hidden py-4 rounded-xl font-bold tracking-wide shadow-lg">
                 {ripple && (
                   <span
                     className="btn-send__ripple"
                     style={{ left: ripple.x, top: ripple.y }}
                   />
                 )}
-                <span className="btn-send__content">
+                <span className="btn-send__content flex items-center justify-center gap-2">
                   📡 Enviar Relatório de Tráfego
                 </span>
               </button>
             </div>
           </div>
 
-          {/* Logs Card */}
-          <div className="card">
-            <div className="card__header">
-              <div className="card__icon card__icon--logs">📋</div>
-              <div>
-                <div className="card__title">Logs do Sistema</div>
-                <div className="card__description">Eventos da rede distribuída em tempo real</div>
-              </div>
-            </div>
-
-            <div className="logs-panel">
-              <div className="logs-container">
-                {log.length === 0 ? (
-                  <div className="logs-empty">
-                    <span className="logs-empty__icon">📭</span>
-                    <span>Nenhum evento registrado</span>
-                    <span>Envie um relatório de tráfego para começar</span>
-                  </div>
-                ) : (
-                  log.map((entry, i) => (
-                    <div key={i} className="log-entry" style={{ animationDelay: `${i * 0.05}s` }}>
-                      <span className={`log-entry__dot ${entry.includes('Erro') ? 'log-entry__dot--error' : ''}`} />
-                      <span className={`log-entry__text ${entry.includes('Erro') ? 'log-entry__text--error' : ''}`}>
-                        {entry}
-                      </span>
-                    </div>
-                  ))
-                )}
-              </div>
-            </div>
-          </div>
-
-          {/* Info Section */}
-          <div className="info-section">
-            <div className="info-grid">
-              {/* About Card */}
-              <div className="card">
-                <div className="card__header">
-                  <div className="card__icon card__icon--info">🔬</div>
-                  <div>
-                    <div className="card__title">Sobre o Projeto</div>
-                    <div className="card__description">Computação Distribuída — PUC Minas</div>
-                  </div>
+          <div className="card h-full flex flex-col justify-between">
+            <div>
+              <div className="card__header">
+                <div className="card__icon card__icon--logs">📋</div>
+                <div>
+                  <div className="card__title">Histórico de Eventos</div>
+                  <div className="card__description">Sincronização com o líder em tempo real</div>
                 </div>
-
-                <ul className="feature-list">
-                  <li className="feature-item">
-                    <span className="feature-item__icon">📡</span>
-                    <div className="feature-item__content">
-                      <div className="feature-item__title">Comunicação gRPC</div>
-                      <div className="feature-item__desc">
-                        3 nós se comunicam via Protocol Buffers com chamadas de procedimento remoto em tempo real
-                      </div>
-                    </div>
-                  </li>
-                  <li className="feature-item">
-                    <span className="feature-item__icon">⏱️</span>
-                    <div className="feature-item__content">
-                      <div className="feature-item__title">Relógio de Lamport</div>
-                      <div className="feature-item__desc">
-                        Sincronização lógica de eventos: cada mensagem carrega um timestamp para garantir ordenação causal
-                      </div>
-                    </div>
-                  </li>
-                  <li className="feature-item">
-                    <span className="feature-item__icon">👑</span>
-                    <div className="feature-item__content">
-                      <div className="feature-item__title">Eleição de Líder (Bully)</div>
-                      <div className="feature-item__desc">
-                        Se um nó cair, os demais iniciam eleição automática para definir um novo coordenador da rede
-                      </div>
-                    </div>
-                  </li>
-                  <li className="feature-item">
-                    <span className="feature-item__icon">🌐</span>
-                    <div className="feature-item__content">
-                      <div className="feature-item__title">API REST Bridge</div>
-                      <div className="feature-item__desc">
-                        Este dashboard envia dados via HTTP que são propagados pela rede gRPC automaticamente
-                      </div>
-                    </div>
-                  </li>
-                </ul>
               </div>
 
-              {/* Terminal Instructions Card */}
-              <div className="card">
-                <div className="card__header">
-                  <div className="card__icon card__icon--terminal">💻</div>
-                  <div>
-                    <div className="card__title">Como Executar</div>
-                    <div className="card__description">Abra 3 terminais para simular os nós</div>
-                  </div>
-                </div>
-
-                <div className="terminal">
-                  <div className="terminal__bar">
-                    <span className="terminal__dot terminal__dot--red" />
-                    <span className="terminal__dot terminal__dot--yellow" />
-                    <span className="terminal__dot terminal__dot--green" />
-                    <span className="terminal__title">PowerShell — server/</span>
-                  </div>
-                  <div className="terminal__body">
-                    <div><span className="terminal__comment"># Terminal 1 — Nó 1 (principal)</span></div>
-                    <div>
-                      <span className="terminal__prompt">❯ </span>
-                      <span className="terminal__cmd">cd server</span>
+              <div className="logs-panel mt-4">
+                <div className="logs-container max-h-[280px] overflow-y-auto pr-2">
+                  {log.length === 0 ? (
+                    <div className="logs-empty py-12">
+                      <span className="logs-empty__icon text-2xl">📭</span>
+                      <span className="text-sm text-slate-400">Nenhum evento registrado</span>
+                      <span className="text-xs text-slate-600">Altere os dados acima para interagir</span>
                     </div>
-                    <div>
-                      <span className="terminal__prompt">❯ </span>
-                      <span className="terminal__flag">$env:</span>
-                      <span className="terminal__cmd">NODE_ID=1; </span>
-                      <span className="terminal__flag">$env:</span>
-                      <span className="terminal__cmd">PORT=50051; npx ts-node node.ts</span>
-                    </div>
-                    <div><span className="terminal__output">→ Nó 1 rodando na porta 50051</span></div>
-                    <br />
-                    <div><span className="terminal__comment"># Terminal 2 — Nó 2</span></div>
-                    <div>
-                      <span className="terminal__prompt">❯ </span>
-                      <span className="terminal__flag">$env:</span>
-                      <span className="terminal__cmd">NODE_ID=2; </span>
-                      <span className="terminal__flag">$env:</span>
-                      <span className="terminal__cmd">PORT=50052; npx ts-node node.ts</span>
-                    </div>
-                    <div><span className="terminal__output">→ Nó 2 rodando na porta 50052</span></div>
-                    <br />
-                    <div><span className="terminal__comment"># Terminal 3 — Nó 3</span></div>
-                    <div>
-                      <span className="terminal__prompt">❯ </span>
-                      <span className="terminal__flag">$env:</span>
-                      <span className="terminal__cmd">NODE_ID=3; </span>
-                      <span className="terminal__flag">$env:</span>
-                      <span className="terminal__cmd">PORT=50053; npx ts-node node.ts</span>
-                    </div>
-                    <div><span className="terminal__output">→ Nó 3 rodando na porta 50053</span></div>
-                    <br />
-                    <div><span className="terminal__comment"># Terminal 4 — Dashboard (este painel)</span></div>
-                    <div>
-                      <span className="terminal__prompt">❯ </span>
-                      <span className="terminal__cmd">cd server/dashboard</span>
-                    </div>
-                    <div>
-                      <span className="terminal__prompt">❯ </span>
-                      <span className="terminal__cmd">npm run dev</span>
-                    </div>
-                    <div><span className="terminal__output">→ Acesse http://localhost:5173</span></div>
-                  </div>
+                  ) : (
+                    log.map((entry, i) => (
+                      <div key={i} className="log-entry p-2 border-b border-slate-800/40 text-xs flex items-center gap-2">
+                        <span className={`log-entry__dot ${entry.includes('Erro') ? 'log-entry__dot--error' : ''}`} />
+                        <span className={entry.includes('Erro') ? 'text-red-400' : 'text-slate-300'}>
+                          {entry}
+                        </span>
+                      </div>
+                    ))
+                  )}
                 </div>
               </div>
             </div>
           </div>
+
         </div>
 
-        {/* Footer */}
-        <footer className="footer">
-          <div className="footer__tech">
-            <span className="footer__tag">⚡ gRPC</span>
-            <span className="footer__tag">📦 Protocol Buffers</span>
-            <span className="footer__tag">🟢 Node.js</span>
-            <span className="footer__tag">⚛️ React</span>
-            <span className="footer__tag">🔷 TypeScript</span>
-            <span className="footer__tag">🚀 Vite</span>
+        <footer className="footer text-center mt-6 flex flex-col items-center gap-3 border-t border-slate-800/40 pt-4">
+          <div className="footer__tech flex flex-wrap justify-center gap-2 text-[10px] uppercase font-semibold text-slate-400">
+            <span className="footer__tag bg-slate-800/60 px-2 py-0.5 rounded">⚡ HTTP Mesh</span>
+            <span className="footer__tag bg-slate-800/60 px-2 py-0.5 rounded">⏱️ Lamport</span>
+            <span className="footer__tag bg-slate-800/60 px-2 py-0.5 rounded">👑 Bully</span>
+            <span className="footer__tag bg-slate-800/60 px-2 py-0.5 rounded">⚛️ React</span>
           </div>
-          <span>Computação Distribuída · PUC Minas · 2026</span>
+          <span className="text-xs text-slate-500">Computação Distribuída · PUC Minas</span>
         </footer>
       </div>
     </div>

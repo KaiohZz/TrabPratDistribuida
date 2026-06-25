@@ -1,192 +1,290 @@
-import * as grpc from '@grpc/grpc-js';
-import * as protoLoader from '@grpc/proto-loader';
-import path from 'path';
 import express from 'express';
 import cors from 'cors';
 
 // Constantes de Limiar
 const TRAFFIC_THRESHOLD = 70;
 
-// Estados de eleição
+// Estados de eleição (Bully)
 let currentCoordinator: number | null = null;
 let isElectionOngoing = false;
 
-
-// Carregar o Protobuf
-const PROTO_PATH = path.resolve(__dirname, '..', 'proto', 'traffic.proto');
-const packageDefinition = protoLoader.loadSync(PROTO_PATH, {
-    keepCase: true,
-    longs: String,
-    enums: String,
-    defaults: true,
-    oneofs: true,
-});
-
-const trafficProto = (grpc.loadPackageDefinition(packageDefinition) as any).traffic;
-
-// Estado do Nó
+// Estado do Nó 
 let lamportClock = 0;
 const myId = parseInt(process.env.NODE_ID || '1');
-const myPort = process.env.PORT || '50051';
-// Lista de portas de outros nós (peers) para comunicação
-const peerPorts = ['50051', '50052', '50053'].filter(p => p !== myPort);
+const myPort = parseInt(process.env.PORT || '50051');
+
+// Lista de portas de outros nós (peers) para comunicação interna
+const peerPorts = [50051, 50052, 50053].filter(p => p !== myPort);
+
+// Interface para a estrutura de cada via
+interface ViaData {
+    status: 'Verde' | 'Amarelo' | 'Vermelho';
+    vehicle_count: number;
+}
+
+// Interface do temporizador
+interface ViaData {
+    status: 'Verde' | 'Amarelo' | 'Vermelho';
+    vehicle_count: number;
+    time_left: number; // Tempo restante em segundos
+}
+
+// Estado global inicializado com tempos padrão
+const intersectionState: Record<'Via A' | 'Via B' | 'Via C' | 'Via D', ViaData> = {
+    'Via A': { status: 'Verde', vehicle_count: 0, time_left: 20 },
+    'Via B': { status: 'Vermelho', vehicle_count: 0, time_left: 0 },
+    'Via C': { status: 'Vermelho', vehicle_count: 0, time_left: 0 },
+    'Via D': { status: 'Vermelho', vehicle_count: 0, time_left: 0 },
+};
+
+type ViaType = 'Via A' | 'Via B' | 'Via C' | 'Via D';
+
+// LÓGICA DE COORDENAÇÃO DE TEMPO DOS SEMÁFOROS (Sincronização Distribuída)
+function coordinateSemaphoresTime() {
+    const vias = Object.keys(intersectionState) as ViaType[];
+    
+    // Encontra qual via está aberta (Verde ou Amarelo) atualmente
+    let activeVia = vias.find(via => intersectionState[via].status === 'Verde' || intersectionState[via].status === 'Amarelo');
+    
+    if (!activeVia) {
+        // Fallback de segurança se tudo estiver fechado
+        intersectionState['Via A'].status = 'Verde';
+        intersectionState['Via A'].time_left = 20;
+        return;
+    }
+
+    if (intersectionState[activeVia].time_left > 0) {
+        // Reduz o tempo restante da via aberta
+        intersectionState[activeVia].time_left--;
+        
+        // Se faltarem apenas 3 segundos, muda o estado interno para Amarelo
+        if (intersectionState[activeVia].time_left <= 3 && intersectionState[activeVia].status === 'Verde') {
+            intersectionState[activeVia].status = 'Amarelo';
+            console.log(`[Coordenador] ${activeVia} entrando em estágio de AMARELO.`);
+        }
+    } else {
+        // Rotacionar o cruzamento para a próxima via em formato Round-Robin
+        console.log(`[Coordenador] Tempo esgotado para a ${activeVia}. Alternando fluxo...`);
+        intersectionState[activeVia].status = 'Vermelho';
+        intersectionState[activeVia].time_left = 0;
+        intersectionState[activeVia].vehicle_count = 0;
+
+        const currentIndex = vias.indexOf(activeVia);
+        const nextIndex = (currentIndex + 1) % vias.length;
+        const nextVia = vias[nextIndex];
+
+        // Abre a próxima via da lista dando 20 segundos para ela
+        intersectionState[nextVia].status = 'Verde';
+        intersectionState[nextVia].time_left = 20;
+        
+        console.log(`[Coordenador] ${nextVia} aberta com sucesso por 20 segundos.`);
+    }
+}
+
+// O Nó Líder/Coordenador atualiza os contadores a cada 1 segundo na malha
+setInterval(coordinateSemaphoresTime, 1000);
 
 // Lógica do Relógio de Lamport
 function updateClock(receivedClock: number) {
     lamportClock = Math.max(lamportClock, receivedClock) + 1;
-    console.log(`[Relógio] Novo tempo de Lamport: ${lamportClock}`);
+    console.log(`[Relógio Lamport] Sincronizado para: ${lamportClock}`);
 }
 
-// Métodos de trânsito e eleição
-const trafficServiceHandlers = {
-    ReportTraffic: (call: any, callback: any) => {
-        const { node_id, road_id, vehicle_count, lamport_clock } = call.request;
-        
-        updateClock(lamport_clock);
+// Inicialização do Servidor Express Único (Processa chamadas Internas e a API Bridge)
+const app = express();
+app.use(cors());
+app.use(express.json());
 
-        console.log(`\n--- Alerta de Tráfego ---`);
-        console.log(`Origem: Nó ${node_id} | Via: ${road_id}`);
-        console.log(`Volume: ${vehicle_count} veículos/min`);
+/* INTERFACES DE COMUNICAÇÃO INTERNA (SUBSTITUINDO O gRPC) */
 
-        if (vehicle_count > TRAFFIC_THRESHOLD) {
-            console.log(`ALERTA: Congestionamento detectado no Nó ${node_id}. Ajustando semáforos locais no Nó ${myId}...`);
-        } else {
-            console.log(`Fluxo normal no Nó ${node_id}.`);
-        }
-
-        callback(null, { success: true });
-    },
-    Election: (call: any, callback: any) => {
-        console.log(`[Eleição] Recebi pedido de eleição do Nó ${call.request.caller_id}`);
-        // Se recebi de alguém menor, eu respondo OK e começo minha própria eleição para desafiar
-        callback(null, { success: true });
-        startElection();
-    },
-    SetCoordinator: (call: any, callback: any) => {
-        currentCoordinator = call.request.leader_id;
-        isElectionOngoing = false;
-        console.log(`[Eleição] Novo Coordenador definido: Nó ${currentCoordinator}`);
-        callback(null, { success: true });
-    },
-};
-
-function simulateTrafficSensor() {
-    // Gera um valor aleatório de tráfego
-    const currentTraffic = Math.floor(Math.random() * 100);
+// Handler equivalente ao ReportTraffic do gRPC
+app.post('/internal/report-traffic', (req, res) => {
+    const { node_id, road_id, vehicle_count, lamport_clock } = req.body;
     
-    console.log(`[Sensor Local] Tráfego atual na minha zona: ${currentTraffic}`);
+    updateClock(lamport_clock);
 
-    // Se o tráfego estiver alto, "avisamos" os vizinhos (Sistemas Distribuídos!)
-    if (currentTraffic > TRAFFIC_THRESHOLD) {
-        console.log(`![CRÍTICO] Tráfego alto! Notificando vizinhos...`);
-        peerPorts.forEach(port => sendDataToPeer(port, currentTraffic));
+    console.log(`\n--- [Rede] Alerta de Tráfego Recebido ---`);
+    console.log(`Origem: Nó ${node_id} | Via de Origem: ${road_id}`);
+    console.log(`Volume reportado: ${vehicle_count} veículos/min`);
+
+    if (vehicle_count > TRAFFIC_THRESHOLD) {
+        console.log(`ALERTA: Congestionamento detectado no Nó ${node_id}. Ajustando réplica local do Nó ${myId}...`);
+        
+        // Sincronização do estado da réplica local com a decisão do líder
+        (Object.keys(intersectionState) as Array<ViaType>).forEach(via => {
+            if (via === road_id) {
+                intersectionState[via].status = 'Verde';
+            } else {
+                intersectionState[via].status = 'Vermelho';
+            }
+            intersectionState[via].vehicle_count = via === road_id ? vehicle_count : 0;
+        });
+    }
+
+    res.send({ success: true });
+});
+
+// Handler equivalente ao Election do gRPC
+app.post('/internal/election', (req, res) => {
+    console.log(`[Eleição Bully] Recebi pedido de eleição do Nó ${req.body.caller_id}`);
+    res.send({ success: true }); // Responde OK imediatamente
+    startElection();
+});
+
+// Handler equivalente ao SetCoordinator do gRPC
+app.post('/internal/set-coordinator', (req, res) => {
+    currentCoordinator = req.body.leader_id;
+    isElectionOngoing = false;
+    console.log(`[Eleição Bully] Coordenador Consensual Definido -> Nó ${currentCoordinator}`);
+    res.send({ success: true });
+});
+
+
+/* API BRIDGE (COMUNICAÇÃO COM O FRONT-END / CELULARES) */
+
+// Rota que retorna o estado atualizado de todas as vias (Polling do dashboard)
+app.get('/intersection-status', (req, res) => {
+    res.send({ 
+        lamport_clock: lamportClock,
+        vias: intersectionState 
+    });
+});
+
+// Rota onde o Dashboard envia os dados do formulário/sensor manual
+app.post('/report', async (req, res) => {
+    const { vehicle_count, road_id } = req.body;
+    const targetRoad = (road_id || 'Via A') as ViaType;
+    
+    if (intersectionState[targetRoad]) {
+        intersectionState[targetRoad].vehicle_count = vehicle_count;
+    }
+
+    // Algoritmo Distribuidor de Decisão Decentralizada
+    if (vehicle_count > TRAFFIC_THRESHOLD) {
+        (Object.keys(intersectionState) as Array<ViaType>).forEach(via => {
+            if (via === targetRoad) {
+                intersectionState[via].status = 'Verde';
+                intersectionState[via].time_left = 25; // Dá 25 segundos extras para escoar o tráfego crítico
+            } else {
+                intersectionState[via].status = 'Vermelho';
+                intersectionState[via].time_left = 0;
+            }
+        });
+    }
+
+    // Propaga a alteração para os outros nós da rede simulando o gRPC original
+    lamportClock++;
+    peerPorts.forEach(port => {
+        sendDataToPeer(port, vehicle_count, targetRoad);
+    });
+    
+    console.log(`[Cruzamento] Input recebido na ${targetRoad}: ${vehicle_count} carros. Sincronizando cluster...`);
+
+    res.send({ 
+        status: `Sincronizado via HTTP Mesh. Lamport: ${lamportClock}`,
+        vias: intersectionState
+    });
+});
+
+
+/* FUNÇÕES DE CLIENTE E ALGORITMOS DISTRIBUÍDOS */
+
+async function sendDataToPeer(port: number, trafficVolume: number, roadId: string) {
+    try {
+        await fetch(`http://127.0.0.1:${port}/internal/report-traffic`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                node_id: myId,
+                road_id: roadId,
+                vehicle_count: trafficVolume,
+                lamport_clock: lamportClock
+            })
+        });
+        console.log(`[Mesh] Replicação enviada com sucesso para o Nó na porta ${port}`);
+    } catch (err) {
+        // Tolerância a falhas silenciosa para nós caídos
     }
 }
 
-// Comunicação entre os nós
-function sendDataToPeer(port: string, trafficVolume: number) {
-    const client = new trafficProto.TrafficService(
-        `localhost:${port}`,
-        grpc.credentials.createInsecure()
-    );
+function simulateTrafficSensor() {
+    const currentTraffic = Math.floor(Math.random() * 100);
+    console.log(`[Sensor Local] Tráfego monitorado na zona do Nó ${myId}: ${currentTraffic} v/m`);
 
-    lamportClock++; 
-    client.ReportTraffic({
-        node_id: myId.toString(),
-        road_id: "Via Expressa " + myId,
-        vehicle_count: trafficVolume,
-        lamport_clock: lamportClock
-    }, (err: any, response: any) => {
-        // Ignorar erros de conexão para nós offline
-        if (!err) console.log(`Notificação enviada para porta ${port}`);
-    });
+    if (currentTraffic > TRAFFIC_THRESHOLD) {
+        console.log(`![ALERTA CRÍTICO] Estouro de capacidade! Propagando nas réplicas...`);
+        peerPorts.forEach(port => sendDataToPeer(port, currentTraffic, `Via ${String.fromCharCode(64 + myId)}`));
+    }
 }
 
-// Inicia simulação a cada 10 segundos
-setInterval(simulateTrafficSensor, 10000)
+// Executa simulação automática a cada 12 segundos
+setInterval(simulateTrafficSensor, 12000);
 
-// Funções de eleição
-function startElection() {
+/* ALGORITMO DE ELEIÇÃO DE BULLY */
+
+function getIDFromPort(port: number): number {
+    if (port === 50051) return 1;
+    if (port === 50052) return 2;
+    if (port === 50053) return 3;
+    return 0;
+}
+
+async function startElection() {
     if (isElectionOngoing) return;
     isElectionOngoing = true;
-    console.log(`[Eleição] Iniciando eleição por falta de líder...`);
+    console.log(`[Eleição Bully] Detectada instabilidade ou falta de líder. Iniciando votação...`);
 
     let higherNodesFound = false;
 
-    // Tenta avisar nós com ID maior que o meu
-    peerPorts.forEach(port => {
-        const peerId = getIDFromPort(port); // Função auxiliar
+    // Dispara requisições apenas para quem tem ID maior que o meu
+    for (const port of peerPorts) {
+        const peerId = getIDFromPort(port);
         if (peerId > myId) {
-            const client = new trafficProto.TrafficService(`localhost:${port}`, grpc.credentials.createInsecure());
-            client.Election({ caller_id: myId }, (err: any) => {
-                if (!err) higherNodesFound = true;
-            });
+            try {
+                await fetch(`http://127.0.0.1:${port}/internal/election`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ caller_id: myId })
+                });
+                higherNodesFound = true;
+            } catch (err) {
+                console.log(`[Falha] Nó superior na porta ${port} não respondeu. Está offline.`);
+            }
         }
-    });
+    }
 
-    // Se ninguém maior respondeu em 2 segundos, eu sou o líder
+    // Se nenhum nó de maior ID respondeu em 2.5 segundos, eu assumo o controle do cluster
     setTimeout(() => {
         if (!higherNodesFound) {
             announceVictory();
         }
-    }, 2000);
+    }, 2500);
 }
 
-function announceVictory() {
-    console.log(`[Eleição] Eu (Nó ${myId}) sou o novo Coordenador!`);
+async function announceVictory() {
+    console.log(`\n==================================================`);
+    console.log(`[Eleição Bully] (Nó ${myId}) assume como novo Coordenador.`);
+    console.log(`==================================================\n`);
     currentCoordinator = myId;
     isElectionOngoing = false;
 
-    peerPorts.forEach(port => {
-        const client = new trafficProto.TrafficService(`localhost:${port}`, grpc.credentials.createInsecure());
-        client.SetCoordinator({ leader_id: myId }, (err: any) => {});
-    });
+    for (const port of peerPorts) {
+        try {
+            await fetch(`http://127.0.0.1:${port}/internal/set-coordinator`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ leader_id: myId })
+            });
+        } catch (err) {
+            // Ignora nós que falharam durante o anúncio
+        }
+    }
 }
 
-function getIDFromPort(port: string): number {
-    if (port === '50051') return 1;
-    if (port === '50052') return 2;
-    if (port === '50053') return 3;
-    return 0;
-}
-
-// Bridge para comunicação
-function startBridgeAPI() {
-    const app = express();
-    app.use(cors());
-    app.use(express.json());
-
-    app.post('/report', (req, res) => {
-        const { vehicle_count } = req.body;
-        
-        // Propaga para a rede gRPC
-        console.log(`\n╔══════════════════════════════════════════════╗`);
-        console.log(`║  📡 TRÁFEGO RECEBIDO VIA DASHBOARD           ║`);
-        console.log(`║  Volume: ${String(vehicle_count).padEnd(4)} veículos/min              ║`);
-        console.log(`║  Origem: Dashboard Web (http://localhost:3000)║`);
-        console.log(`║  Destino: Nós ${peerPorts.join(', ')}              ║`);
-        console.log(`║  Relógio de Lamport: ${lamportClock}${' '.repeat(Math.max(0, 24 - String(lamportClock).length))}║`);
-        console.log(`╚══════════════════════════════════════════════╝`);
-        peerPorts.forEach(port => sendDataToPeer(port, vehicle_count));
-        
-        res.send({ status: `Sincronizado. Lamport: ${lamportClock}` });
-    });
-
-    app.listen(3000, () => {
-        console.log(`API Bridge disponível em http://localhost:3000`);
-    });
-}
-
-// Inicialização do Servidor
-function main() {
-    const server = new grpc.Server();
-    server.addService(trafficProto.TrafficService.service, trafficServiceHandlers);
-    server.bindAsync(`0.0.0.0:${myPort}`, grpc.ServerCredentials.createInsecure(), (err, port) => {
-        if (err) return console.error(err);
-        console.log(`Nó ${myId} rodando na porta ${port}`);
-        server.start();
-    });
-    startBridgeAPI();
-}
-
-main();
+/* INICIALIZAÇÃO DO PROCESSO */
+app.listen(myPort, '0.0.0.0', () => {
+    console.log(`===========================================================`);
+    console.log(`  NÓ ${myId} ONLINE - Ouvindo na porta ${myPort}`);
+    console.log(`  Mapeamento de endpoints e logs ativado com sucesso.`);
+    console.log(`===========================================================`);
+});
