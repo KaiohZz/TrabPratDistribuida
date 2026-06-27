@@ -1,9 +1,0 @@
-COMANDOS PARA INICIALIZAR
-
-DASHBOARD: npm run dev
-
-INICIAR NÓ 1: set NODE_ID=1 && set PORT=50051 && npx ts-node node.ts
-
-INICIAR NÓ 2: set NODE_ID=2 && set PORT=50052 && npx ts-node node.ts
-
-INICIAR NÓ 3: set NODE_ID=3 && set PORT=50053 && npx ts-node node.ts
