@@ -1,0 +1,17 @@
+# Dependências
+node_modules/
+
+# Build
+dist/
+build/
+
+# Ferramentas locais / Claude
+.claude/
+
+# Sistema
+.DS_Store
+
+# Logs e env
+*.log
+.env
+.env.local
