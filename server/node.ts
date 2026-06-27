@@ -16,11 +16,9 @@ const myPort = parseInt(process.env.PORT || '50051');
 // Lista de portas de outros nós (peers) para comunicação interna
 const peerPorts = [50051, 50052, 50053].filter(p => p !== myPort);
 
-// Interface para a estrutura de cada via
-interface ViaData {
-    status: 'Verde' | 'Amarelo' | 'Vermelho';
-    vehicle_count: number;
-}
+// Estado de controle de transição forçada por prioridade
+let isTransitioning = false;
+let pendingTargetVia: ViaType | null = null;
 
 // Interface do temporizador
 interface ViaData {
@@ -39,45 +37,120 @@ const intersectionState: Record<'Via A' | 'Via B' | 'Via C' | 'Via D', ViaData> 
 
 type ViaType = 'Via A' | 'Via B' | 'Via C' | 'Via D';
 
+// Informações do cruzamento no terminal
+function printIntersectionDashboard() {
+    const vias = Object.keys(intersectionState) as ViaType[];
+    
+    console.log(`\n============== 🚦 ESTADO DO CRUZAMENTO (Nó ${myId}) ==============`);
+    console.table(
+        vias.map(via => {
+            const info = intersectionState[via];
+            let icon = '🔴 [FECHADO]';
+            if (info.status === 'Verde') icon = '🟢 [ABERTO] ';
+            if (info.status === 'Amarelo') icon = '🟡 [ATENÇÃO]';
+
+            return {
+                'Via/Direção': via,
+                'Status Semáforo': icon,
+                'Tempo Restante': info.time_left > 0 ? `${info.time_left}s` : '-',
+                'Carga (Veículos)': `${info.vehicle_count} v/m`
+            };
+        })
+    );
+    console.log(`==================================================================\n`);
+}
+
 // LÓGICA DE COORDENAÇÃO DE TEMPO DOS SEMÁFOROS (Sincronização Distribuída)
 function coordinateSemaphoresTime() {
     const vias = Object.keys(intersectionState) as ViaType[];
     
-    // Encontra qual via está aberta (Verde ou Amarelo) atualmente
+    // Encontra a via que está atualmente aberta (Verde ou Amarelo)
     let activeVia = vias.find(via => intersectionState[via].status === 'Verde' || intersectionState[via].status === 'Amarelo');
-    
+
+    // Escoamento de Tráfego: Se a via está verde, diminui os carros dela gradativamente
+    if (activeVia && intersectionState[activeVia].status === 'Verde' && intersectionState[activeVia].vehicle_count > 0) {
+        // Simula a vazão de 4 veículos por segundo enquanto o sinal estiver verde
+        intersectionState[activeVia].vehicle_count = Math.max(0, intersectionState[activeVia].vehicle_count - 2);
+    }
+
+    // Análise de Carga Global: Encontra qual via está em situação mais crítica (maior volume)
+    let highestLoadVia: ViaType | null = null; 
+    let maxVehicles = TRAFFIC_THRESHOLD;
+
+    vias.forEach(via => {
+        if (intersectionState[via].vehicle_count > maxVehicles) {
+            maxVehicles = intersectionState[via].vehicle_count;
+            highestLoadVia = via;
+        }
+    });
+
+    // Mecanismo de Preempção Suave (Transição Segura para Via Crítica)
+    if (highestLoadVia !== null && highestLoadVia !== activeVia && !isTransitioning) {
+        const targetVia = highestLoadVia as ViaType; // Typecast seguro para o escopo interno
+        
+        console.log(`\n[Coordenador - ALERTA] Via de maior carga detectada: ${targetVia} (${intersectionState[targetVia].vehicle_count} carros).`);
+        
+        if (activeVia && intersectionState[activeVia].status === 'Verde') {
+            console.log(`[Coordenador] Colocando a via atual ${activeVia} em AMARELO para transição segura.`);
+            isTransitioning = true;
+            pendingTargetVia = targetVia;
+            intersectionState[activeVia].status = 'Amarelo';
+            intersectionState[activeVia].time_left = 3; 
+            printIntersectionDashboard();
+        } else if (!activeVia) {
+            intersectionState[targetVia].status = 'Verde';
+            intersectionState[targetVia].time_left = 25;
+        }
+        return;
+    }
+
+    // Se uma transição forçada estava em andamento e o amarelo acabou
+    if (isTransitioning && activeVia && intersectionState[activeVia].time_left <= 0) {
+        console.log(`[Coordenador] Transição concluída. Fechando ${activeVia} e abrindo a via prioritária ${pendingTargetVia}.`);
+        
+        intersectionState[activeVia].status = 'Vermelho';
+        intersectionState[activeVia].time_left = 0;
+
+        if (pendingTargetVia) {
+            // Calcula tempo baseado na carga real (mínimo 20s, máximo 45s)
+            const calculatedTime = Math.min(45, Math.max(20, Math.floor(intersectionState[pendingTargetVia].vehicle_count / 2.5)));
+            intersectionState[pendingTargetVia].status = 'Verde';
+            intersectionState[pendingTargetVia].time_left = calculatedTime;
+        }
+
+        isTransitioning = false;
+        pendingTargetVia = null;
+        printIntersectionDashboard();
+        return;
+    }
+
+    // Ciclo de Funcionamento Normal (Round-Robin)
     if (!activeVia) {
-        // Fallback de segurança se tudo estiver fechado
         intersectionState['Via A'].status = 'Verde';
         intersectionState['Via A'].time_left = 20;
         return;
     }
 
     if (intersectionState[activeVia].time_left > 0) {
-        // Reduz o tempo restante da via aberta
         intersectionState[activeVia].time_left--;
         
-        // Se faltarem apenas 3 segundos, muda o estado interno para Amarelo
+        // Ativação do Amarelo convencional no ciclo normal
         if (intersectionState[activeVia].time_left <= 3 && intersectionState[activeVia].status === 'Verde') {
             intersectionState[activeVia].status = 'Amarelo';
-            console.log(`[Coordenador] ${activeVia} entrando em estágio de AMARELO.`);
         }
     } else {
-        // Rotacionar o cruzamento para a próxima via em formato Round-Robin
-        console.log(`[Coordenador] Tempo esgotado para a ${activeVia}. Alternando fluxo...`);
+        // Rotatividade padrão quando o tempo acaba sozinho
         intersectionState[activeVia].status = 'Vermelho';
         intersectionState[activeVia].time_left = 0;
-        intersectionState[activeVia].vehicle_count = 0;
+        //intersectionState[activeVia].vehicle_count = 0; 
 
         const currentIndex = vias.indexOf(activeVia);
         const nextIndex = (currentIndex + 1) % vias.length;
         const nextVia = vias[nextIndex];
 
-        // Abre a próxima via da lista dando 20 segundos para ela
         intersectionState[nextVia].status = 'Verde';
         intersectionState[nextVia].time_left = 20;
-        
-        console.log(`[Coordenador] ${nextVia} aberta com sucesso por 20 segundos.`);
+        printIntersectionDashboard();
     }
 }
 
@@ -87,62 +160,40 @@ setInterval(coordinateSemaphoresTime, 1000);
 // Lógica do Relógio de Lamport
 function updateClock(receivedClock: number) {
     lamportClock = Math.max(lamportClock, receivedClock) + 1;
-    console.log(`[Relógio Lamport] Sincronizado para: ${lamportClock}`);
 }
 
-// Inicialização do Servidor Express Único (Processa chamadas Internas e a API Bridge)
+// Inicialização do Servidor Express
 const app = express();
 app.use(cors());
 app.use(express.json());
 
-/* INTERFACES DE COMUNICAÇÃO INTERNA (SUBSTITUINDO O gRPC) */
+/* INTERFACES DE COMUNICAÇÃO INTERNA */
 
-// Handler equivalente ao ReportTraffic do gRPC
 app.post('/internal/report-traffic', (req, res) => {
-    const { node_id, road_id, vehicle_count, lamport_clock } = req.body;
-    
+    const { road_id, vehicle_count, lamport_clock } = req.body;
     updateClock(lamport_clock);
 
-    console.log(`\n--- [Rede] Alerta de Tráfego Recebido ---`);
-    console.log(`Origem: Nó ${node_id} | Via de Origem: ${road_id}`);
-    console.log(`Volume reportado: ${vehicle_count} veículos/min`);
-
-    if (vehicle_count > TRAFFIC_THRESHOLD) {
-        console.log(`ALERTA: Congestionamento detectado no Nó ${node_id}. Ajustando réplica local do Nó ${myId}...`);
-        
-        // Sincronização do estado da réplica local com a decisão do líder
-        (Object.keys(intersectionState) as Array<ViaType>).forEach(via => {
-            if (via === road_id) {
-                intersectionState[via].status = 'Verde';
-            } else {
-                intersectionState[via].status = 'Vermelho';
-            }
-            intersectionState[via].vehicle_count = via === road_id ? vehicle_count : 0;
-        });
+    const targetRoad = road_id as ViaType;
+    if (intersectionState[targetRoad]) {
+        // Sincroniza o valor do sensor enviado pelo nó parceiro
+        intersectionState[targetRoad].vehicle_count = vehicle_count;
     }
-
     res.send({ success: true });
 });
 
-// Handler equivalente ao Election do gRPC
 app.post('/internal/election', (req, res) => {
-    console.log(`[Eleição Bully] Recebi pedido de eleição do Nó ${req.body.caller_id}`);
-    res.send({ success: true }); // Responde OK imediatamente
+    res.send({ success: true });
     startElection();
 });
 
-// Handler equivalente ao SetCoordinator do gRPC
 app.post('/internal/set-coordinator', (req, res) => {
     currentCoordinator = req.body.leader_id;
     isElectionOngoing = false;
-    console.log(`[Eleição Bully] Coordenador Consensual Definido -> Nó ${currentCoordinator}`);
     res.send({ success: true });
 });
 
+/* API BRIDGE (COMUNICAÇÃO COM O FRONT-END) */
 
-/* API BRIDGE (COMUNICAÇÃO COM O FRONT-END / CELULARES) */
-
-// Rota que retorna o estado atualizado de todas as vias (Polling do dashboard)
 app.get('/intersection-status', (req, res) => {
     res.send({ 
         lamport_clock: lamportClock,
@@ -150,44 +201,31 @@ app.get('/intersection-status', (req, res) => {
     });
 });
 
-// Rota onde o Dashboard envia os dados do formulário/sensor manual
 app.post('/report', async (req, res) => {
     const { vehicle_count, road_id } = req.body;
     const targetRoad = (road_id || 'Via A') as ViaType;
     
     if (intersectionState[targetRoad]) {
-        intersectionState[targetRoad].vehicle_count = vehicle_count;
+        intersectionState[targetRoad].vehicle_count += vehicle_count;
     }
 
-    // Algoritmo Distribuidor de Decisão Decentralizada
-    if (vehicle_count > TRAFFIC_THRESHOLD) {
-        (Object.keys(intersectionState) as Array<ViaType>).forEach(via => {
-            if (via === targetRoad) {
-                intersectionState[via].status = 'Verde';
-                intersectionState[via].time_left = 25; // Dá 25 segundos extras para escoar o tráfego crítico
-            } else {
-                intersectionState[via].status = 'Vermelho';
-                intersectionState[via].time_left = 0;
-            }
-        });
-    }
+    console.log(`[Sensor] Recebido relatório para ${targetRoad}: ${vehicle_count} carros.`);
 
-    // Propaga a alteração para os outros nós da rede simulando o gRPC original
+    // Propaga o valor real do tráfego para os outros nós
     lamportClock++;
     peerPorts.forEach(port => {
         sendDataToPeer(port, vehicle_count, targetRoad);
     });
-    
-    console.log(`[Cruzamento] Input recebido na ${targetRoad}: ${vehicle_count} carros. Sincronizando cluster...`);
 
+    printIntersectionDashboard();
+    
     res.send({ 
-        status: `Sincronizado via HTTP Mesh. Lamport: ${lamportClock}`,
+        status: `Métricas registradas. Lamport: ${lamportClock}`,
         vias: intersectionState
     });
 });
 
-
-/* FUNÇÕES DE CLIENTE E ALGORITMOS DISTRIBUÍDOS */
+/* FUNÇÕES DE CLIENTE */
 
 async function sendDataToPeer(port: number, trafficVolume: number, roadId: string) {
     try {
@@ -201,24 +239,10 @@ async function sendDataToPeer(port: number, trafficVolume: number, roadId: strin
                 lamport_clock: lamportClock
             })
         });
-        console.log(`[Mesh] Replicação enviada com sucesso para o Nó na porta ${port}`);
     } catch (err) {
-        // Tolerância a falhas silenciosa para nós caídos
+        // Falha tratada silenciosamente
     }
 }
-
-function simulateTrafficSensor() {
-    const currentTraffic = Math.floor(Math.random() * 100);
-    console.log(`[Sensor Local] Tráfego monitorado na zona do Nó ${myId}: ${currentTraffic} v/m`);
-
-    if (currentTraffic > TRAFFIC_THRESHOLD) {
-        console.log(`![ALERTA CRÍTICO] Estouro de capacidade! Propagando nas réplicas...`);
-        peerPorts.forEach(port => sendDataToPeer(port, currentTraffic, `Via ${String.fromCharCode(64 + myId)}`));
-    }
-}
-
-// Executa simulação automática a cada 12 segundos
-setInterval(simulateTrafficSensor, 12000);
 
 /* ALGORITMO DE ELEIÇÃO DE BULLY */
 
@@ -232,11 +256,9 @@ function getIDFromPort(port: number): number {
 async function startElection() {
     if (isElectionOngoing) return;
     isElectionOngoing = true;
-    console.log(`[Eleição Bully] Detectada instabilidade ou falta de líder. Iniciando votação...`);
 
     let higherNodesFound = false;
 
-    // Dispara requisições apenas para quem tem ID maior que o meu
     for (const port of peerPorts) {
         const peerId = getIDFromPort(port);
         if (peerId > myId) {
@@ -248,12 +270,11 @@ async function startElection() {
                 });
                 higherNodesFound = true;
             } catch (err) {
-                console.log(`[Falha] Nó superior na porta ${port} não respondeu. Está offline.`);
+                // Nó offline
             }
         }
     }
 
-    // Se nenhum nó de maior ID respondeu em 2.5 segundos, eu assumo o controle do cluster
     setTimeout(() => {
         if (!higherNodesFound) {
             announceVictory();
@@ -262,9 +283,6 @@ async function startElection() {
 }
 
 async function announceVictory() {
-    console.log(`\n==================================================`);
-    console.log(`[Eleição Bully] (Nó ${myId}) assume como novo Coordenador.`);
-    console.log(`==================================================\n`);
     currentCoordinator = myId;
     isElectionOngoing = false;
 
@@ -275,16 +293,12 @@ async function announceVictory() {
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ leader_id: myId })
             });
-        } catch (err) {
-            // Ignora nós que falharam durante o anúncio
-        }
+        } catch (err) { }
     }
 }
 
-/* INICIALIZAÇÃO DO PROCESSO */
 app.listen(myPort, '0.0.0.0', () => {
     console.log(`===========================================================`);
     console.log(`  NÓ ${myId} ONLINE - Ouvindo na porta ${myPort}`);
-    console.log(`  Mapeamento de endpoints e logs ativado com sucesso.`);
     console.log(`===========================================================`);
 });
