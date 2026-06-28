@@ -16,7 +16,7 @@ A proposta é implementar uma **rede de sensores distribuídos** (opção 4 do e
 - Manter a sincronização lógica de eventos entre todos os nós (Lamport)
 - Replicar e convergir o estado do cruzamento entre todas as réplicas
 
-> ⚙️ **Nota de evolução do projeto (2ª entrega):** a camada de transporte original era baseada em **gRPC**. Devido a incompatibilidades no subsistema de resolução de nomes (DNS internal parser) do Windows, a comunicação foi migrada para uma **Malha HTTP (HTTP Mesh)** baseada em Express, trocando mensagens em JSON. A topologia distribuída, as portas lógicas e a semântica do cluster foram integralmente mantidas. Os artefatos `proto/traffic.proto` e as dependências `@grpc/*` permanecem no repositório apenas como referência histórica e **não são mais utilizados**.
+> ⚙️ **Nota de evolução do projeto (2ª entrega):** a camada de transporte original era baseada em **gRPC**. Devido a incompatibilidades no subsistema de resolução de nomes (DNS internal parser) do Windows, a comunicação foi migrada para uma **Malha HTTP (HTTP Mesh)** baseada em Express, trocando mensagens em JSON. A topologia distribuída, as portas lógicas e a semântica do cluster foram integralmente mantidas.
 
 ---
 
@@ -46,11 +46,13 @@ Cada nó é um processo Express isolado que escuta na sua própria porta lógica
 
 ### Fluxo de Comunicação
 
-1. **Sensor Local** → Cada nó gera leituras de tráfego aleatórias a cada **12 segundos** (0 a 100 veículos/min)
-2. **Detecção de Congestionamento** → Se o volume ultrapassa **70 veículos/min**, o nó propaga alertas em **multicast** aos vizinhos via HTTP
-3. **Propagação / Replicação** → Os vizinhos recebem o alerta no endpoint `/internal/report-traffic`, atualizam seu relógio de Lamport e sincronizam a réplica local do estado do cruzamento
-4. **Coordenação de Tempo** → Um laço de 1 segundo gerencia a contagem regressiva dos semáforos (Verde → Amarelo → Vermelho) em estilo Round-Robin
-5. **Dashboard** → O usuário envia leituras manuais pelo painel web (porta 50051), que são propagadas pela malha
+1. **Entrada de Dados (Sensores / Painel)** → O sistema reage a dados **reais** de tráfego inseridos via dashboard, celular ou chamadas HTTP diretas (`/report`). Não há mais geração automática de números aleatórios — o estado evolui a partir das leituras reais e da vazão do cruzamento
+2. **Propagação / Replicação** → Ao receber uma leitura, o nó atua como coordenador momentâneo da escrita, atualiza seu relógio de Lamport e propaga o valor em **multicast** para as réplicas dos vizinhos via `/internal/report-traffic`
+3. **Análise de Carga Global** → Um laço de 1 segundo avalia continuamente as 4 vias. Se alguma ultrapassa **70 veículos/min**, o coordenador identifica a via de **maior carga real** e a prioriza (preempção)
+4. **Vazão Contínua** → Enquanto uma via está **Verde**, o servidor escoa gradativamente sua carga (**−2 veículos/segundo**), simulando os carros atravessando o cruzamento
+5. **Coordenação de Tempo** → O mesmo laço gerencia a contagem regressiva dos semáforos (Verde → Amarelo → Vermelho) em estilo Round-Robin, com **transição suave (Preempção Segura)** quando há prioridade
+6. **Telemetria** → A cada mudança de estado, cada nó imprime no terminal uma tabela (`console.table`) com o status, o tempo restante e a carga de cada via
+7. **Dashboard** → O usuário envia leituras manuais pelo painel web (porta 50051), propagadas pela malha; o painel faz polling de 1s para atualizar o cronômetro
 
 ---
 
@@ -82,12 +84,24 @@ Cada nó mantém em memória local um **espelho do estado de todo o cruzamento**
 
 ### 4. Coordenação Baseada em Tempo (Semáforo Inteligente)
 
-O servidor gerencia ativamente os semáforos por uma **contagem regressiva coordenada** (`time_left`), atualizada a cada 1 segundo:
+O servidor gerencia ativamente os semáforos por uma **contagem regressiva coordenada** (`time_left`), atualizada a cada 1 segundo (`coordinateSemaphoresTime`). A lógica combina quatro mecanismos:
 
+**a) Ciclo Normal (Round-Robin distribuído)**
 - A via ativa permanece **Verde por 20 segundos**
 - Nos últimos **3 segundos** ela passa para **Amarelo** (estágio de atenção)
-- Ao esgotar o tempo, alterna para **Vermelho** e abre sequencialmente a próxima via (**Round-Robin distribuído**)
-- Se for detectado **fluxo crítico (> 70 veículos/min)**, o ciclo padrão é interrompido para priorizar a via congestionada por **25 segundos**, recalculando o estado global
+- Ao esgotar o tempo, alterna para **Vermelho** e abre sequencialmente a próxima via
+
+**b) Análise de Carga Global**
+- A cada segundo o coordenador percorre o vetor das 4 vias (A, B, C, D) e identifica a via de **maior congestionamento real** que esteja acima do limiar de **70 veículos/min**
+- Em vez de abrir abruptamente qualquer via que estoure o limiar, o sistema **prioriza estritamente a via mais carregada** entre todas
+
+**c) Preempção Segura (Transição Suave)**
+- Quando uma via crítica precisa de passagem, a via atualmente Verde **não chaveia instantaneamente** para Vermelho
+- Ela entra obrigatoriamente em **Amarelo por 3 segundos** (`isTransitioning`), permitindo o escoamento seguro dos veículos, e só então fecha e cede o Verde à via prioritária
+- O tempo de Verde da via prioritária é **dinâmico**, calculado pela carga real (`floor(carga / 2.5)`), limitado entre **20s e 45s** — quanto maior o congestionamento, maior o tempo de passagem
+
+**d) Vazão Contínua**
+- Enquanto uma via está Verde, o servidor **reduz 2 veículos por segundo** da sua carga, simulando os carros atravessando o cruzamento
 
 ### 5. Eleição de Líder (Algoritmo do Valentão / Bully)
 
@@ -105,6 +119,21 @@ Os nós expõem, na própria porta, os endpoints consumidos pelo dashboard:
 
 - **`POST /report`** → Recebe dados de tráfego do dashboard, atualiza a via e propaga via HTTP Mesh para os vizinhos
 - **`GET /intersection-status`** → Retorna o estado atual de todas as vias e o relógio de Lamport (usado no polling do dashboard)
+
+### 7. Telemetria e Auditoria em Tempo Real
+
+Uma função centralizada (`printIntersectionDashboard`) imprime no terminal uma **tabela formatada** (`console.table`) sempre que ocorre uma mudança de estado relevante — rotação do Round-Robin, ativação de via crítica ou chegada de um novo dado de sensor. A tabela mostra, para cada uma das 4 vias, o **status do semáforo** (🟢 Aberto / 🟡 Atenção / 🔴 Fechado), o **tempo restante** em segundos e a **carga atual** de veículos:
+
+```
+============== 🚦 ESTADO DO CRUZAMENTO (Nó 1) ==============
+┌─────────┬───────────────┬─────────────────┬──────────────────┬──────────────────┐
+│ (index) │  Via/Direção  │ Status Semáforo │  Tempo Restante  │ Carga (Veículos) │
+├─────────┼───────────────┼─────────────────┼──────────────────┼──────────────────┤
+│    0    │    'Via A'    │ '🟢 [ABERTO] '  │      '18s'       │     '12 v/m'     │
+│    1    │    'Via B'    │ '🔴 [FECHADO]'  │       '-'        │     '85 v/m'     │
+└─────────┴───────────────┴─────────────────┴──────────────────┴──────────────────┘
+==================================================================
+```
 
 ---
 
@@ -164,7 +193,7 @@ npm --version
 > ⚠️ **Importante:** Todos os comandos abaixo devem ser executados a partir da pasta raiz do projeto.
 
 ```powershell
-cd e:\faculdade\CC_PUC\CD\TP1\TrabPratDistribuida
+cd e:\faculdade\CC_PUC\CD\TPfinal\TrabPratDistribuida
 ```
 
 ---
@@ -173,11 +202,11 @@ cd e:\faculdade\CC_PUC\CD\TP1\TrabPratDistribuida
 
 ```powershell
 # Instalar dependências do backend
-cd e:\faculdade\CC_PUC\CD\TP1\TrabPratDistribuida\server
+cd e:\faculdade\CC_PUC\CD\TPfinal\TrabPratDistribuida\server
 npm install
 
 # Instalar dependências do dashboard
-cd e:\faculdade\CC_PUC\CD\TP1\TrabPratDistribuida\server\dashboard
+cd e:\faculdade\CC_PUC\CD\TPfinal\TrabPratDistribuida\server\dashboard
 npm install
 ```
 
@@ -189,31 +218,32 @@ Você precisa abrir **3 terminais separados** (um para cada nó). Em **cada** te
 
 **Terminal 1 — Nó 1:**
 ```powershell
-cd e:\faculdade\CC_PUC\CD\TP1\TrabPratDistribuida\server
+cd e:\faculdade\CC_PUC\CD\TPfinal\TrabPratDistribuida\server
 $env:NODE_ID=1; $env:PORT=50051; npx ts-node node.ts
 ```
 
 **Terminal 2 — Nó 2:**
 ```powershell
-cd e:\faculdade\CC_PUC\CD\TP1\TrabPratDistribuida\server
+cd e:\faculdade\CC_PUC\CD\TPfinal\TrabPratDistribuida\server
 $env:NODE_ID=2; $env:PORT=50052; npx ts-node node.ts
 ```
 
 **Terminal 3 — Nó 3:**
 ```powershell
-cd e:\faculdade\CC_PUC\CD\TP1\TrabPratDistribuida\server
+cd e:\faculdade\CC_PUC\CD\TPfinal\TrabPratDistribuida\server
 $env:NODE_ID=3; $env:PORT=50053; npx ts-node node.ts
 ```
 
 > **💡 Dica:** Cada nó expõe sua própria API HTTP na mesma porta em que escuta. O **Nó 1 (porta 50051)** é o ponto de entrada usado pelo dashboard. Não há mais uma porta 3000 separada — a antiga "API Bridge" foi unificada na porta do próprio nó.
 
-Você verá mensagens como:
+Você verá a confirmação de inicialização:
 ```
 ===========================================================
   NÓ 1 ONLINE - Ouvindo na porta 50051
 ===========================================================
-[Sensor Local] Tráfego monitorado na zona do Nó 1: 42 v/m
 ```
+
+A partir daí, sempre que houver uma leitura de tráfego ou mudança de estado, o nó imprime a tabela de telemetria do cruzamento (ver seção *Telemetria e Auditoria em Tempo Real*).
 
 ---
 
@@ -222,13 +252,20 @@ Você verá mensagens como:
 Abra um **4º terminal** e execute:
 
 ```powershell
-cd e:\faculdade\CC_PUC\CD\TP1\TrabPratDistribuida\server\dashboard
+cd e:\faculdade\CC_PUC\CD\TPfinal\TrabPratDistribuida\server\dashboard
 npm run dev
 ```
 
 Acesse no navegador: **http://localhost:5173**
 
 > 📱 **Acesso pelo celular / outra máquina:** o dashboard aponta para o nó principal através das constantes `SERVER_IP` e `SERVER_PORT` em [App.tsx](server/dashboard/src/App.tsx#L16-L18). Para acessar de outro dispositivo na mesma rede, ajuste `SERVER_IP` para o **IP de rede local** da máquina que roda os nós (ex.: `192.168.0.9`). Para uso apenas local, use `localhost`.
+
+> 🌐 **Hospedagem no GitHub Pages:** o painel do Atuador de Borda (React + Vite) também pode ser publicado no GitHub Pages para acesso remoto. O Vite já está configurado com `base: '/TrabPratDistribuida/'` ([vite.config.ts](server/dashboard/vite.config.ts)) e o deploy é feito com:
+> ```powershell
+> cd e:\faculdade\CC_PUC\CD\TPfinal\TrabPratDistribuida\server\dashboard
+> npm run deploy   # roda o build e publica a pasta dist via gh-pages
+> ```
+> O front-end hospedado continua consumindo a API dos nós via `SERVER_IP`/`SERVER_PORT`, comprovando a consistência das réplicas ativas e o ordenamento de eventos pelo Relógio de Lamport mesmo com clientes simultâneos (PC + celular).
 
 No dashboard, você pode:
 1. Selecionar a via (A/B/C/D) e digitar o número de veículos
@@ -240,8 +277,8 @@ No dashboard, você pode:
 
 ### Passo 5 — Testar as funcionalidades
 
-#### ✅ Teste 1: Sensor Automático
-Apenas aguarde — a cada **12 segundos**, cada nó gera um valor aleatório de tráfego. Se o valor for maior que 70, ele notifica os vizinhos automaticamente. Observe os logs nos terminais.
+#### ✅ Teste 1: Vazão Contínua e Reação a Dados Reais
+Não há mais geração automática de números aleatórios. Insira uma carga em uma via (pelo dashboard ou via terminal) e observe, na tabela de telemetria, a **carga diminuir 2 veículos por segundo** enquanto a via estiver Verde, simulando os carros atravessando o cruzamento. Quando uma via ultrapassa 70 v/m, o coordenador prioriza a via de **maior carga** com uma transição segura (Amarelo de 3s) antes de abrir o Verde.
 
 #### ✅ Teste 2: Envio Manual pelo Dashboard
 No dashboard, selecione uma via, insira um valor **acima de 70** (ex: 85) e clique em enviar. Observe nos terminais dos nós 2 e 3 as mensagens de alerta/replicação recebidas.
@@ -261,10 +298,16 @@ Invoke-RestMethod -Uri http://localhost:50051/intersection-status -Method GET
 #### ✅ Teste 4: Eleição de Líder (Bully) e Tolerância a Falhas
 1. Com os 3 nós rodando, **feche o terminal do Nó 3** (Ctrl+C)
 2. Os nós restantes continuam operando (degradação graciosa) e as chamadas ao nó offline falham silenciosamente
-3. O nó com maior ID entre os restantes se declara coordenador
+3. Para demonstrar a eleição, dispare um pedido no endpoint de eleição — o nó com maior ID disponível assume o papel de coordenador e anuncia o resultado aos demais:
+```powershell
+Invoke-RestMethod -Uri http://localhost:50051/internal/election -Method POST -ContentType "application/json" -Body '{"caller_id": 1}'
+```
 
 #### ✅ Teste 5: Relógio de Lamport
-Observe nos logs a mensagem `[Relógio Lamport] Sincronizado para: X`. O valor do relógio sempre aumenta a cada evento, garantindo a ordenação causal dos eventos distribuídos.
+Cada evento incrementa o relógio lógico do nó. Consulte o valor atual no campo `lamport_clock` do endpoint de status — ele sempre aumenta a cada evento, garantindo a ordenação causal:
+```powershell
+Invoke-RestMethod -Uri http://localhost:50051/intersection-status -Method GET
+```
 
 ---
 
