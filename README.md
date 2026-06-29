@@ -103,15 +103,30 @@ O servidor gerencia ativamente os semáforos por uma **contagem regressiva coord
 **d) Vazão Contínua**
 - Enquanto uma via está Verde, o servidor **reduz 2 veículos por segundo** da sua carga, simulando os carros atravessando o cruzamento
 
-### 5. Eleição de Líder (Algoritmo do Valentão / Bully)
+### 5. Tratamento de Falhas (Requisito Obrigatório — 2ª entrega)
 
-Quando um nó detecta instabilidade ou ausência de líder, ele inicia uma eleição:
+O tratamento de falhas é feito em três níveis:
 
-1. Envia `POST /internal/election` para todos os nós com **ID maior** que o seu
+**a) Detecção por Heartbeat**
+- A cada **2 segundos** (`HEARTBEAT_INTERVAL`), cada nó faz `GET /internal/ping` no coordenador atual
+- Se o coordenador não responde, ele é considerado indisponível e a reeleição é disparada automaticamente
+
+**b) Reeleição Automática (Algoritmo do Valentão / Bully)**
+1. Ao detectar a queda do coordenador (ou na inicialização), o nó chama `startElection()` e envia `POST /internal/election` aos nós com **ID maior** que o seu
 2. Se nenhum nó com ID maior responder em **2,5 segundos**, ele se declara líder
 3. O novo líder envia `POST /internal/set-coordinator` para todos os outros nós
+- O nó de **maior ID entre os ativos** vence — sem intervenção manual. O failover completo (detecção + eleição) fica **abaixo de 5 segundos**
 
-Toda a comunicação interna é encapsulada em blocos `try/catch`: se um nó cai (Ctrl+C), as requisições para ele **falham silenciosamente** na camada de transporte, permitindo que os nós remanescentes continuem operando em **degradação graciosa**.
+**c) Degradação Graciosa e Recuperação de Estado**
+- Toda chamada entre nós está em `try/catch`: se um nó cai (Ctrl+C), as requisições para ele **falham silenciosamente** e os demais continuam operando
+- Ao (re)iniciar, o nó chama `syncStateFromPeers()` → `GET /internal/state` no primeiro peer ativo e **recupera o estado das 4 vias** em vez de começar zerado
+
+### 6. Web Services (API REST + Dashboard)
+
+Os nós expõem, na própria porta, os endpoints consumidos pelo dashboard:
+
+- **`POST /report`** → Recebe dados de tráfego do dashboard, atualiza a via e propaga via HTTP Mesh para os vizinhos
+- **`GET /intersection-status`** → Retorna o estado atual de todas as vias e o relógio de Lamport (usado no polling do dashboard)
 
 ### 6. Web Services (API REST + Dashboard)
 
@@ -295,13 +310,15 @@ Invoke-RestMethod -Uri http://localhost:50051/report -Method POST -ContentType "
 Invoke-RestMethod -Uri http://localhost:50051/intersection-status -Method GET
 ```
 
-#### ✅ Teste 4: Eleição de Líder (Bully) e Tolerância a Falhas
-1. Com os 3 nós rodando, **feche o terminal do Nó 3** (Ctrl+C)
-2. Os nós restantes continuam operando (degradação graciosa) e as chamadas ao nó offline falham silenciosamente
-3. Para demonstrar a eleição, dispare um pedido no endpoint de eleição — o nó com maior ID disponível assume o papel de coordenador e anuncia o resultado aos demais:
-```powershell
-Invoke-RestMethod -Uri http://localhost:50051/internal/election -Method POST -ContentType "application/json" -Body '{"caller_id": 1}'
+#### ✅ Teste 4: Tratamento de Falhas — Failover Automático (Bully)
+1. Com os 3 nós rodando, aguarde a eleição inicial (o **Nó 3**, maior ID, vira coordenador — veja o log `[Eleição] Novo coordenador definido: Nó 3`)
+2. **Feche o terminal do Nó 3** (Ctrl+C)
+3. Em até ~5s, o heartbeat detecta a queda e a reeleição roda **sozinha**. Nos terminais dos Nós 1 e 2 aparecem:
 ```
+[Falha Detectada] Coordenador (Nó 3) parou de responder ao heartbeat. Iniciando reeleição...
+[Eleição] Nó 2 venceu a eleição e assumiu como COORDENADOR.
+```
+4. **Recuperação de estado:** reinicie o Nó 3 — no log dele aparece `[Recuperação de Estado] Estado sincronizado a partir do Nó X`, mostrando que ele voltou com o estado das vias em vez de zerado
 
 #### ✅ Teste 5: Relógio de Lamport
 Cada evento incrementa o relógio lógico do nó. Consulte o valor atual no campo `lamport_clock` do endpoint de status — ele sempre aumenta a cada evento, garantindo a ordenação causal:
@@ -327,5 +344,7 @@ Invoke-RestMethod -Uri http://localhost:50051/intersection-status -Method GET
 | POST   | `/internal/report-traffic`    | Interno  | Replicação de tráfego entre nós            |
 | POST   | `/internal/election`          | Interno  | Pedido de eleição (Bully)                  |
 | POST   | `/internal/set-coordinator`   | Interno  | Anúncio do novo coordenador                |
+| GET    | `/internal/ping`              | Interno  | Heartbeat — responde se o nó está vivo     |
+| GET    | `/internal/state`             | Interno  | Estado atual das vias (recuperação na reconexão) |
 | POST   | `/report`                     | Público  | Envio de leitura pelo dashboard            |
 | GET    | `/intersection-status`        | Público  | Estado das 4 vias + relógio de Lamport     |

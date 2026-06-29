@@ -16,6 +16,9 @@ const myPort = parseInt(process.env.PORT || '50051');
 // Lista de portas de outros nós (peers) para comunicação interna
 const peerPorts = [50051, 50052, 50053].filter(p => p !== myPort);
 
+// Intervalo do heartbeat: de quanto em quanto tempo o coordenador é verificado (ms)
+const HEARTBEAT_INTERVAL = 2000;
+
 // Estado de controle de transição forçada por prioridade
 let isTransitioning = false;
 let pendingTargetVia: ViaType | null = null;
@@ -69,7 +72,7 @@ function coordinateSemaphoresTime() {
 
     // Escoamento de Tráfego: Se a via está verde, diminui os carros dela gradativamente
     if (activeVia && intersectionState[activeVia].status === 'Verde' && intersectionState[activeVia].vehicle_count > 0) {
-        // Simula a vazão de 4 veículos por segundo enquanto o sinal estiver verde
+        // Simula a vazão de 2 veículos por segundo enquanto o sinal estiver verde
         intersectionState[activeVia].vehicle_count = Math.max(0, intersectionState[activeVia].vehicle_count - 2);
     }
 
@@ -189,7 +192,18 @@ app.post('/internal/election', (req, res) => {
 app.post('/internal/set-coordinator', (req, res) => {
     currentCoordinator = req.body.leader_id;
     isElectionOngoing = false;
+    console.log(`[Eleição] Novo coordenador definido: Nó ${currentCoordinator}.`);
     res.send({ success: true });
+});
+
+// Heartbeat: responde que está vivo. Usado pelos outros nós para detectar falhas.
+app.get('/internal/ping', (req, res) => {
+    res.send({ alive: true, node_id: myId });
+});
+
+// Recuperação de estado: devolve o estado atual das vias para um nó que está retornando ao cluster.
+app.get('/internal/state', (req, res) => {
+    res.send({ lamport_clock: lamportClock, vias: intersectionState });
 });
 
 /* API BRIDGE (COMUNICAÇÃO COM O FRONT-END) */
@@ -253,6 +267,13 @@ function getIDFromPort(port: number): number {
     return 0;
 }
 
+function getPortFromId(id: number): number {
+    if (id === 1) return 50051;
+    if (id === 2) return 50052;
+    if (id === 3) return 50053;
+    return 0;
+}
+
 async function startElection() {
     if (isElectionOngoing) return;
     isElectionOngoing = true;
@@ -285,6 +306,7 @@ async function startElection() {
 async function announceVictory() {
     currentCoordinator = myId;
     isElectionOngoing = false;
+    console.log(`[Eleição] Nó ${myId} venceu a eleição e assumiu como COORDENADOR.`);
 
     for (const port of peerPorts) {
         try {
@@ -297,8 +319,65 @@ async function announceVictory() {
     }
 }
 
+/* DETECÇÃO DE FALHAS (HEARTBEAT) E RECUPERAÇÃO DE ESTADO */
+
+// Pinga um nó e retorna se ele está vivo
+async function pingPeer(port: number): Promise<boolean> {
+    try {
+        const res = await fetch(`http://127.0.0.1:${port}/internal/ping`);
+        return res.ok;
+    } catch (err) {
+        return false;
+    }
+}
+
+// A cada ciclo de heartbeat verifica se o coordenador continua respondendo.
+// Se não responder (ou se não houver coordenador), dispara a reeleição automaticamente.
+async function checkCoordinator() {
+    if (isElectionOngoing) return;
+
+    if (currentCoordinator === null) {
+        startElection();
+        return;
+    }
+
+    // Sou o coordenador: não preciso verificar a mim mesmo
+    if (currentCoordinator === myId) return;
+
+    const alive = await pingPeer(getPortFromId(currentCoordinator));
+    if (!alive) {
+        console.log(`\n[Falha Detectada] Coordenador (Nó ${currentCoordinator}) parou de responder ao heartbeat. Iniciando reeleição...`);
+        currentCoordinator = null;
+        startElection();
+    }
+}
+
+setInterval(checkCoordinator, HEARTBEAT_INTERVAL);
+
+// Ao entrar (ou retornar) ao cluster, busca o estado atual em algum peer ativo
+async function syncStateFromPeers() {
+    for (const port of peerPorts) {
+        try {
+            const res = await fetch(`http://127.0.0.1:${port}/internal/state`);
+            const data: any = await res.json();
+            if (data && data.vias) {
+                Object.assign(intersectionState, data.vias);
+                updateClock(data.lamport_clock || 0);
+                console.log(`[Recuperação de Estado] Estado sincronizado a partir do Nó ${getIDFromPort(port)}.`);
+                return;
+            }
+        } catch (err) {
+            // Peer offline, tenta o próximo
+        }
+    }
+}
+
 app.listen(myPort, '0.0.0.0', () => {
     console.log(`===========================================================`);
     console.log(`  NÓ ${myId} ONLINE - Ouvindo na porta ${myPort}`);
     console.log(`===========================================================`);
+
+    // Recupera o estado de quem já estiver no ar e dispara a eleição inicial
+    syncStateFromPeers();
+    setTimeout(startElection, 1500);
 });
