@@ -182,7 +182,6 @@ TrabPratDistribuida/
 │       │   ├── App.css        # Estilos do dashboard
 │       │   └── main.tsx       # Ponto de entrada React
 │       └── package.json       # Dependências do frontend
-├── TP-Instrucoes.pdf          # Enunciado do trabalho
 └── README.md                  # Este arquivo
 ```
 
@@ -208,7 +207,7 @@ npm --version
 > ⚠️ **Importante:** Todos os comandos abaixo devem ser executados a partir da pasta raiz do projeto.
 
 ```powershell
-cd e:\faculdade\CC_PUC\CD\TPfinal\TrabPratDistribuida
+cd c:\<CaminhoDoProjeto>\TrabPratDistribuida
 ```
 
 ---
@@ -217,11 +216,11 @@ cd e:\faculdade\CC_PUC\CD\TPfinal\TrabPratDistribuida
 
 ```powershell
 # Instalar dependências do backend
-cd e:\faculdade\CC_PUC\CD\TPfinal\TrabPratDistribuida\server
+cd c:\<CaminhoDoProjeto>\TrabPratDistribuida\server
 npm install
 
 # Instalar dependências do dashboard
-cd e:\faculdade\CC_PUC\CD\TPfinal\TrabPratDistribuida\server\dashboard
+cd c:\<CaminhoDoProjeto>\TrabPratDistribuida\server\dashboard
 npm install
 ```
 
@@ -233,19 +232,19 @@ Você precisa abrir **3 terminais separados** (um para cada nó). Em **cada** te
 
 **Terminal 1 — Nó 1:**
 ```powershell
-cd e:\faculdade\CC_PUC\CD\TPfinal\TrabPratDistribuida\server
+cd c:\<CaminhoDoProjeto>\TrabPratDistribuida\server
 $env:NODE_ID=1; $env:PORT=50051; npx ts-node node.ts
 ```
 
 **Terminal 2 — Nó 2:**
 ```powershell
-cd e:\faculdade\CC_PUC\CD\TPfinal\TrabPratDistribuida\server
+cd c:\<CaminhoDoProjeto>\TrabPratDistribuida\server
 $env:NODE_ID=2; $env:PORT=50052; npx ts-node node.ts
 ```
 
 **Terminal 3 — Nó 3:**
 ```powershell
-cd e:\faculdade\CC_PUC\CD\TPfinal\TrabPratDistribuida\server
+cd c:\<CaminhoDoProjeto>\TrabPratDistribuida\server
 $env:NODE_ID=3; $env:PORT=50053; npx ts-node node.ts
 ```
 
@@ -262,22 +261,30 @@ A partir daí, sempre que houver uma leitura de tráfego ou mudança de estado, 
 
 ---
 
-### Passo 4 — Iniciar o Dashboard
+### Passo 4 — Configurar e Iniciar o Dashboard
 
-Abra um **4º terminal** e execute:
+Antes de levantar o painel, é fundamental certificar-se de que ele está apontando para o endereço IP correto do seu ambiente rodando o backend.
+
+Abra o arquivo do frontend localizado em server/dashboard/src/App.tsx e altere a constante SERVER_IP
+
+> Para rodar tudo no mesmo PC: configure como 'localhost' ou '127.0.0.1'.
+
+> Para testar via celular / outros computadores na mesma rede: configure com o seu endereço IPv4 local (ex: '192.168.0.9'). Atenção: Não use localhost se for acessar externamente.
+
+Acesse no navegador: **https://kaiohzz.github.io/TrabPratDistribuida/**
+
+Para rodar localmente, abra um **4º terminal** e execute:
 
 ```powershell
-cd e:\faculdade\CC_PUC\CD\TPfinal\TrabPratDistribuida\server\dashboard
+cd c:\<CaminhoDoProjeto>\TrabPratDistribuida\server\dashboard
 npm run dev
 ```
-
-Acesse no navegador: **http://localhost:5173**
 
 > 📱 **Acesso pelo celular / outra máquina:** o dashboard aponta para o nó principal através das constantes `SERVER_IP` e `SERVER_PORT` em [App.tsx](server/dashboard/src/App.tsx#L16-L18). Para acessar de outro dispositivo na mesma rede, ajuste `SERVER_IP` para o **IP de rede local** da máquina que roda os nós (ex.: `192.168.0.9`). Para uso apenas local, use `localhost`.
 
 > 🌐 **Hospedagem no GitHub Pages:** o painel do Atuador de Borda (React + Vite) também pode ser publicado no GitHub Pages para acesso remoto. O Vite já está configurado com `base: '/TrabPratDistribuida/'` ([vite.config.ts](server/dashboard/vite.config.ts)) e o deploy é feito com:
 > ```powershell
-> cd e:\faculdade\CC_PUC\CD\TPfinal\TrabPratDistribuida\server\dashboard
+> cd c:\<CaminhoDoProjeto>\TrabPratDistribuida\server\dashboard
 > npm run deploy   # roda o build e publica a pasta dist via gh-pages
 > ```
 > O front-end hospedado continua consumindo a API dos nós via `SERVER_IP`/`SERVER_PORT`, comprovando a consistência das réplicas ativas e o ordenamento de eventos pelo Relógio de Lamport mesmo com clientes simultâneos (PC + celular).

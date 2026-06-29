@@ -14,7 +14,7 @@ function App() {
   const [ripple, setRipple] = useState<{ x: number; y: number } | null>(null)
 
   // Endereço do Nó 1 que centraliza a API HTTP na porta 50051
-  const SERVER_IP = '192.168.0.9' 
+  const SERVER_IP = '192.168.0.52' 
   const SERVER_PORT = '50051'
 
   // Polling para atualizar o semáforo e os tempos em tempo real
