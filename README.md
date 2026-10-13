@@ -2,7 +2,7 @@
 
 Distributed system for real-time urban traffic monitoring and control, where multiple nodes (intersections/traffic lights) communicate with each other to detect congestion and coordinate responses autonomously.
 
-> 🇧🇷 Versão em português: [README.pt-BR.md](README-pt-br.md)
+> 🇧🇷 Versão em português: [README-pt-br.md](README-pt-br.md)
 
 ---
 
