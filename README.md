@@ -4,8 +4,6 @@ A real-time distributed system for urban traffic monitoring and control. Multipl
 
 Live dashboard: https://kaiohzz.github.io/TrabPratDistribuida/ (requires the nodes to be running, see Getting started)
 
-<!-- TODO: add a screenshot or GIF of the dashboard here, e.g. ![Dashboard](docs/dashboard.png) -->
-
 Português: a versão original deste README está em README.pt-BR.md.
 
 📌 About
